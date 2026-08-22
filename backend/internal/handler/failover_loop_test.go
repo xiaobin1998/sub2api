@@ -112,6 +112,15 @@ func TestEffectiveSameAccountRetryLimitHonorsErrorCapAndDisabledAccount(t *testi
 	require.Equal(t, 1, effectiveSameAccountRetryLimit(&service.UpstreamFailoverError{SameAccountRetryMax: 1}, account))
 	account.Credentials["pool_mode_retry_count"] = float64(0)
 	require.Equal(t, 0, effectiveSameAccountRetryLimit(&service.UpstreamFailoverError{SameAccountRetryMax: 1}, account))
+
+	// Request-scoped transient errors may explicitly raise the retry budget
+	// above the ordinary three-attempt pool default (e.g. Antigravity Claude
+	// pre-output capacity/stream failures capped at ten retries).
+	account.Credentials["pool_mode_retry_count"] = float64(3)
+	require.Equal(t, 10, effectiveSameAccountRetryLimit(&service.UpstreamFailoverError{
+		RequestScopedTransient: true,
+		SameAccountRetryMax:    10,
+	}, account))
 }
 
 // ---------------------------------------------------------------------------

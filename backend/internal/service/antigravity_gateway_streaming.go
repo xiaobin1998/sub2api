@@ -870,6 +870,8 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, 
 			if ev.err != nil {
 				if errors.Is(ev.err, bufio.ErrTooLong) {
 					logger.LegacyPrintf("service.antigravity_gateway", "SSE line too long (antigravity claude non-stream): max_size=%d error=%v", maxLineSize, ev.err)
+				} else if !meaningfulResponse {
+					return nil, nil, newAntigravityTransientStreamFailoverError(originalModel)
 				}
 				return nil, nil, ev.err
 			}
@@ -921,6 +923,9 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, 
 			if time.Since(lastRead) < streamInterval {
 				continue
 			}
+			if !meaningfulResponse {
+				return nil, nil, newAntigravityTransientStreamFailoverError(originalModel)
+			}
 			logger.LegacyPrintf("service.antigravity_gateway", "Stream data interval timeout (antigravity claude non-stream)")
 			return nil, nil, fmt.Errorf("stream data interval timeout")
 		}
@@ -930,11 +935,7 @@ returnResponse:
 	// 处理空响应情况 — 触发同账号重试 + failover 切换账号
 	if !meaningfulResponse {
 		logger.LegacyPrintf("service.antigravity_gateway", "[antigravity-Forward] warning: empty stream response (claude non-stream), triggering failover")
-		return nil, nil, &UpstreamFailoverError{
-			StatusCode:             http.StatusBadGateway,
-			ResponseBody:           []byte(`{"error":"empty stream response from upstream"}`),
-			RetryableOnSameAccount: true,
-		}
+		return nil, nil, newAntigravityTransientStreamFailoverError(originalModel)
 	}
 
 	// 选择最后一个有效响应
@@ -1130,15 +1131,14 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 					// 整个流未收到任何可解析的上游数据（全部 SSE 行均无法被 JSON 解析），
 					// 触发 failover 在同账号重试，避免向客户端发出缺少 message_start 的残缺流
 					logger.LegacyPrintf("service.antigravity_gateway", "[antigravity-Claude-Stream] empty stream response (no valid events parsed), triggering failover")
-					return nil, &UpstreamFailoverError{
-						StatusCode:             http.StatusBadGateway,
-						ResponseBody:           []byte(`{"error":"empty stream response from upstream"}`),
-						RetryableOnSameAccount: true,
-					}
+					return nil, newAntigravityTransientStreamFailoverError(originalModel)
 				}
 				return &antigravityStreamResult{usage: convertUsage(agUsage), firstTokenMs: firstTokenMs, clientDisconnect: cw.Disconnected()}, nil
 			}
 			if ev.err != nil {
+				if !processor.MessageStartSent() && !cw.Disconnected() && !errors.Is(ev.err, bufio.ErrTooLong) {
+					return nil, newAntigravityTransientStreamFailoverError(originalModel)
+				}
 				if disconnect, handled := handleStreamReadError(ev.err, cw.Disconnected(), "antigravity claude"); handled {
 					return &antigravityStreamResult{usage: finishUsage(), firstTokenMs: firstTokenMs, clientDisconnect: disconnect}, nil
 				}
@@ -1172,6 +1172,9 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 			if cw.Disconnected() {
 				logger.LegacyPrintf("service.antigravity_gateway", "Upstream timeout after client disconnect (antigravity claude), returning collected usage")
 				return &antigravityStreamResult{usage: finishUsage(), firstTokenMs: firstTokenMs, clientDisconnect: true}, nil
+			}
+			if !processor.MessageStartSent() {
+				return nil, newAntigravityTransientStreamFailoverError(originalModel)
 			}
 			logger.LegacyPrintf("service.antigravity_gateway", "Stream data interval timeout (antigravity)")
 			sendErrorEvent("stream_timeout")

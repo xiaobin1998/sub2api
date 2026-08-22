@@ -419,6 +419,26 @@ func TestAntigravityCompatEmptyStreamTriggersFailover(t *testing.T) {
 	}
 }
 
+func TestAntigravityCompatClaudeEmptyStreamUsesTransientRetryBudget(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newAntigravityCompatService(config.GatewayConfig{MaxLineSize: defaultMaxLineSize}, nil)
+	c, recorder := newAntigravityCompatContext(http.MethodPost, "/", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("data: malformed\n\ndata: [DONE]\n\n")),
+	}
+
+	result, err := svc.handleChatCompletionsStreamingFromAntigravity(c, resp, time.Now(), "claude-sonnet-4-6", true)
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.True(t, failoverErr.RequestScopedTransient)
+	require.Equal(t, antigravityClaudeTransientRetryMaxRetries, failoverErr.SameAccountRetryMax)
+	require.False(t, failoverErr.SameAccountRetryDeadline.IsZero())
+	require.Empty(t, recorder.Body.String())
+}
+
 func TestAntigravityCompatUsageOnlyStreamTriggersFailover(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

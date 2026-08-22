@@ -115,6 +115,13 @@ func effectiveSameAccountRetryLimit(failoverErr *service.UpstreamFailoverError, 
 		return 0
 	}
 	limit := account.GetPoolModeRetryCount()
+	// Request-scoped transient errors may carry their own retry budget. This is
+	// used by Antigravity Claude's pre-output stream/resource failures, where
+	// the normal account fallback of three retries is too small but a bounded
+	// error-specific cap is still required.
+	if failoverErr != nil && failoverErr.RequestScopedTransient && failoverErr.SameAccountRetryMax > 0 {
+		return failoverErr.SameAccountRetryMax
+	}
 	if limit > 0 && failoverErr != nil && failoverErr.SameAccountRetryMax > 0 && failoverErr.SameAccountRetryMax < limit {
 		return failoverErr.SameAccountRetryMax
 	}
@@ -206,6 +213,11 @@ func (s *FailoverState) HandleFailoverError(
 	s.LastFailoverErr = failoverErr
 	if failoverErr == nil || !failoverErr.ShouldRetryNextAccount() {
 		return FailoverExhausted
+	}
+	if failoverErr.RequestScopedTransient && failoverErr.SameAccountRetryMax > 0 {
+		// Error-specific request budgets must apply to every gateway caller,
+		// including handlers that still pass the legacy account default.
+		retryLimit = failoverErr.SameAccountRetryMax
 	}
 
 	// 同账号重试不算切换账号，粘性会话仅在实际切换时强制缓存计费。

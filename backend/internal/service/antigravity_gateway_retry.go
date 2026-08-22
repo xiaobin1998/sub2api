@@ -103,9 +103,98 @@ type smartRetryResult struct {
 	switchError *AntigravityAccountSwitchError // 模型限流时返回账号切换信号
 }
 
+func isAntigravityClaudeModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "claude-")
+}
+
+// isAntigravityClaudeTransientResourceError 只识别 Claude 请求的临时资源故障。
+// 认证、权限、验证、配额和明确限流错误必须走原有错误/切换流程，不能套用
+// “同账号重试 10 次”的请求级预算。
+func isAntigravityClaudeTransientResourceError(model string, statusCode int, body []byte) bool {
+	if !isAntigravityClaudeModel(model) {
+		return false
+	}
+
+	message := strings.ToLower(strings.TrimSpace(string(body)))
+	hardMarkers := []string{
+		"validation_required",
+		"permission_denied",
+		"unauthenticated",
+		"invalid bearer",
+		"quota_exhausted",
+		"quota exceeded",
+		"rate_limit_exceeded",
+		"rate limit",
+		"insufficient_quota",
+	}
+	for _, marker := range hardMarkers {
+		if strings.Contains(message, marker) {
+			return false
+		}
+	}
+
+	switch statusCode {
+	case http.StatusServiceUnavailable, http.StatusBadGateway, http.StatusGatewayTimeout, http.StatusInternalServerError, 529:
+		if message == "" {
+			return true
+		}
+		for _, marker := range []string{
+			"model_capacity_exhausted",
+			"resource has been exhausted",
+			"resource exhausted",
+			"capacity",
+			"overload",
+			"temporarily unavailable",
+			"service unavailable",
+			"resource unavailable",
+			"try again",
+			"internal",
+			"unavailable",
+		} {
+			if strings.Contains(message, marker) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// newAntigravityTransientStreamFailoverError 为尚未输出语义内容的流异常
+// 构造同账号重试信号。兼容层会在首个有效内容前缓冲事件，因此此时重试
+// 不会把半截 Claude 消息重复发给 Codex。
+func newAntigravityTransientStreamFailoverError(model string) *UpstreamFailoverError {
+	err := &UpstreamFailoverError{
+		StatusCode:             http.StatusBadGateway,
+		ResponseBody:           []byte(`{"error":"transient upstream stream failure"}`),
+		RetryableOnSameAccount: true,
+	}
+	if isAntigravityClaudeModel(model) {
+		err.RequestScopedTransient = true
+		err.SameAccountRetryMax = antigravityClaudeTransientRetryMaxRetries
+		err.SameAccountRetryDeadline = time.Now().Add(antigravityClaudeTransientRetryWindow)
+		// 允许仅写出 SSE 注释/心跳时继续 failover；语义内容由上层缓冲，
+		// 一旦已经输出正文则不会走这个错误构造。
+		err.SafeToFailoverAfterWrite = true
+	}
+	return err
+}
+
 // handleSmartRetry 处理 OAuth 账号的智能重试逻辑
 // 将 429/503 限流处理逻辑抽取为独立函数，减少 antigravityRetryLoop 的复杂度
 func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParams, resp *http.Response, respBody []byte, baseURL string, urlIdx int, availableURLs []string) *smartRetryResult {
+	// Claude 的 429 明确表示官方限流/额度类结果时，不再进入智能重试，
+	// 避免把“额度用完/官方限流”误当成临时资源不足反复重放。
+	if isAntigravityClaudeModel(p.requestedModel) && resp.StatusCode == http.StatusTooManyRequests {
+		return &smartRetryResult{
+			action: smartRetryActionBreakWithResp,
+			resp: &http.Response{
+				StatusCode: resp.StatusCode,
+				Header:     resp.Header.Clone(),
+				Body:       io.NopCloser(bytes.NewReader(respBody)),
+			},
+		}
+	}
+
 	// "Resource has been exhausted" 是 URL 级别限流，切换 URL（仅 429）
 	if resp.StatusCode == http.StatusTooManyRequests && isURLLevelRateLimit(respBody) && urlIdx < len(availableURLs)-1 {
 		logger.LegacyPrintf("service.antigravity_gateway", "%s URL fallback (429): %s -> %s", p.prefix, baseURL, availableURLs[urlIdx+1])
@@ -174,11 +263,15 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 		var lastRetryResp *http.Response
 		var lastRetryBody []byte
 
-		// MODEL_CAPACITY_EXHAUSTED 使用独立的重试参数（60 次，固定 1s 间隔）
+		// MODEL_CAPACITY_EXHAUSTED 使用独立的重试参数（默认 60 次，固定 1s 间隔）。
+		// Claude 请求收敛到 10 次，避免单个 Codex 任务长时间占用连接。
 		maxAttempts := antigravitySmartRetryMaxAttempts
 		if isModelCapacityExhausted {
 			maxAttempts = antigravityModelCapacityRetryMaxAttempts
 			waitDuration = antigravityModelCapacityRetryWait
+			if isAntigravityClaudeModel(p.requestedModel) {
+				maxAttempts = antigravityClaudeTransientRetryMaxRetries
+			}
 
 			// 全局去重：如果其他 goroutine 已在重试同一模型且尚在 cooldown 中，直接返回 503
 			if modelName != "" {
@@ -198,6 +291,10 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 					}
 				}
 			}
+		} else if isAntigravityClaudeTransientResourceError(p.requestedModel, resp.StatusCode, respBody) {
+			// Claude 的 503/529/网关瞬时资源错误使用同一请求的专用预算；
+			// 429 配额/限流不会命中此分支。
+			maxAttempts = antigravityClaudeTransientRetryMaxRetries
 		}
 
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -356,6 +453,13 @@ func (s *AntigravityGatewayService) handleSingleAccountRetryInPlace(
 	waitDuration time.Duration,
 	modelName string,
 ) *smartRetryResult {
+	maxAttempts := antigravitySingleAccountSmartRetryMaxAttempts
+	totalMaxWait := antigravitySingleAccountSmartRetryTotalMaxWait
+	if isAntigravityClaudeModel(modelName) {
+		maxAttempts = antigravityClaudeTransientRetryMaxRetries
+		totalMaxWait = antigravityClaudeTransientRetryWindow
+	}
+
 	// 限制单次等待时间
 	if waitDuration > antigravitySingleAccountSmartRetryMaxWait {
 		waitDuration = antigravitySingleAccountSmartRetryMaxWait
@@ -371,20 +475,20 @@ func (s *AntigravityGatewayService) handleSingleAccountRetryInPlace(
 	var lastRetryBody []byte
 	totalWaited := time.Duration(0)
 
-	for attempt := 1; attempt <= antigravitySingleAccountSmartRetryMaxAttempts; attempt++ {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		// 检查累计等待是否超限
-		if totalWaited+waitDuration > antigravitySingleAccountSmartRetryTotalMaxWait {
-			remaining := antigravitySingleAccountSmartRetryTotalMaxWait - totalWaited
+		if totalWaited+waitDuration > totalMaxWait {
+			remaining := totalMaxWait - totalWaited
 			if remaining <= 0 {
 				logger.LegacyPrintf("service.antigravity_gateway", "%s single_account_503_retry: total_wait_exceeded total=%v max=%v, giving up",
-					p.prefix, totalWaited, antigravitySingleAccountSmartRetryTotalMaxWait)
+					p.prefix, totalWaited, totalMaxWait)
 				break
 			}
 			waitDuration = remaining
 		}
 
 		logger.LegacyPrintf("service.antigravity_gateway", "%s status=%d single_account_503_retry attempt=%d/%d delay=%v total_waited=%v model=%s account=%d",
-			p.prefix, resp.StatusCode, attempt, antigravitySingleAccountSmartRetryMaxAttempts, waitDuration, totalWaited, modelName, p.account.ID)
+			p.prefix, resp.StatusCode, attempt, maxAttempts, waitDuration, totalWaited, modelName, p.account.ID)
 
 		timer := time.NewTimer(waitDuration)
 		select {
@@ -430,7 +534,7 @@ func (s *AntigravityGatewayService) handleSingleAccountRetryInPlace(
 		_ = retryResp.Body.Close()
 
 		// 解析新的重试信息，更新下次等待时间
-		if attempt < antigravitySingleAccountSmartRetryMaxAttempts && lastRetryBody != nil {
+		if attempt < maxAttempts && lastRetryBody != nil {
 			_, _, newWaitDuration, _, _ := shouldTriggerAntigravitySmartRetry(p.account, lastRetryBody)
 			if newWaitDuration > 0 {
 				waitDuration = newWaitDuration
@@ -451,7 +555,7 @@ func (s *AntigravityGatewayService) handleSingleAccountRetryInPlace(
 		retryBody = respBody
 	}
 	logger.LegacyPrintf("service.antigravity_gateway", "%s status=%d single_account_503_retry_exhausted attempts=%d total_waited=%v model=%s account=%d body=%s (return 503 directly)",
-		p.prefix, resp.StatusCode, antigravitySingleAccountSmartRetryMaxAttempts, totalWaited, modelName, p.account.ID, truncateForLog(retryBody, 200))
+		p.prefix, resp.StatusCode, maxAttempts, totalWaited, modelName, p.account.ID, truncateForLog(retryBody, 200))
 
 	return &smartRetryResult{
 		action: smartRetryActionBreakWithResp,

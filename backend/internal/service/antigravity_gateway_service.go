@@ -40,6 +40,12 @@ const (
 	antigravityModelCapacityRetryMaxAttempts = 60
 	antigravityModelCapacityRetryWait        = 1 * time.Second
 
+	// Claude Antigravity 临时资源故障重试参数。
+	// 这是“同一个请求”的重试预算：初始请求之外最多再重试 10 次。
+	// 只给 Claude 的请求级瞬时故障使用，不能扩大到验证、权限或配额错误。
+	antigravityClaudeTransientRetryMaxRetries = 10
+	antigravityClaudeTransientRetryWindow     = 90 * time.Second
+
 	// Google RPC 状态和类型常量
 	googleRPCStatusResourceExhausted      = "RESOURCE_EXHAUSTED"
 	googleRPCStatusUnavailable            = "UNAVAILABLE"

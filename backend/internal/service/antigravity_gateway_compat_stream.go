@@ -110,6 +110,7 @@ type antigravityCompatStreamSession struct {
 	processor      *antigravity.StreamingProcessor
 	adapter        antigravityCompatStreamAdapter
 	writer         *antigravityClientWriter
+	model          string
 	usage          *ClaudeUsage
 	pendingEvents  []apicompat.AnthropicStreamEvent
 	firstTokenMs   *int
@@ -127,6 +128,7 @@ func newAntigravityCompatStreamSession(
 		processor: antigravity.NewStreamingProcessor(model),
 		adapter:   adapter,
 		writer:    writer,
+		model:     model,
 		usage:     &ClaudeUsage{},
 		startTime: startTime,
 	}
@@ -293,7 +295,7 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStream(
 		case event, open := <-events:
 			if !open {
 				if !session.hasMeaningfulData() && !writer.Disconnected() {
-					return nil, antigravityCompatEmptyStreamError()
+					return nil, antigravityCompatEmptyStreamError(session.model)
 				}
 				return session.finish(), nil
 			}
@@ -309,7 +311,7 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStream(
 				return session.collectResult(true), nil
 			}
 			if !session.hasMeaningfulData() {
-				return nil, antigravityCompatEmptyStreamError()
+				return nil, antigravityCompatEmptyStreamError(session.model)
 			}
 			logger.LegacyPrintf("service.antigravity_gateway", "Stream data interval timeout (%s)", prefix)
 			writeAntigravityCompatStreamError(c, adapter, writer, "stream_timeout")
@@ -406,16 +408,16 @@ func (s *AntigravityGatewayService) handleAntigravityCompatReadError(
 	maxLineSize int,
 	prefix string,
 ) (*antigravityStreamResult, error) {
-	if !session.hasMeaningfulData() && !session.writer.Disconnected() {
-		return nil, antigravityCompatEmptyStreamError()
-	}
-	if disconnect, handled := handleStreamReadError(err, session.writer.Disconnected(), prefix); handled {
-		return session.collectResult(disconnect), nil
-	}
 	if errors.Is(err, bufio.ErrTooLong) {
 		logger.LegacyPrintf("service.antigravity_gateway", "SSE line too long (%s): max_size=%d error=%v", prefix, maxLineSize, err)
 		writeAntigravityCompatStreamError(c, session.adapter, session.writer, "response_too_large")
 		return session.result(false), err
+	}
+	if !session.hasMeaningfulData() && !session.writer.Disconnected() {
+		return nil, antigravityCompatEmptyStreamError(session.model)
+	}
+	if disconnect, handled := handleStreamReadError(err, session.writer.Disconnected(), prefix); handled {
+		return session.collectResult(disconnect), nil
 	}
 	writeAntigravityCompatStreamError(c, session.adapter, session.writer, "stream_read_error")
 	return nil, fmt.Errorf("stream read error: %w", err)
@@ -431,13 +433,9 @@ func writeAntigravityCompatStreamError(
 	MarkResponseCommitted(c)
 }
 
-func antigravityCompatEmptyStreamError() error {
+func antigravityCompatEmptyStreamError(model string) error {
 	logger.LegacyPrintf("service.antigravity_gateway", "Empty Antigravity compatibility stream, triggering failover")
-	return &UpstreamFailoverError{
-		StatusCode:             http.StatusBadGateway,
-		ResponseBody:           []byte(`{"error":"empty stream response from upstream"}`),
-		RetryableOnSameAccount: true,
-	}
+	return newAntigravityTransientStreamFailoverError(model)
 }
 
 func (s *AntigravityGatewayService) handleChatCompletionsStreamingFromAntigravity(
