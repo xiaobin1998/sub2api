@@ -1,0 +1,17 @@
+services:
+  sub2api:
+    image: xiaobin1998/sub2api:commit-316e03c52
+    environment:
+      HTTP_PROXY: http://mihomo:7890
+      HTTPS_PROXY: http://mihomo:7890
+      NO_PROXY: localhost,127.0.0.1,postgres,redis,tuxevil-rotator,new-api,gemini-web2api,mihomo
+      GATEWAY_ANTIGRAVITY_FORWARD_BASE_URL: daily
+      RUN_MODE: standard
+      SIMPLE_MODE_CONFIRM: "true"
+    networks:
+      - sub2api-network
+      - 1panel-network
+
+networks:
+  1panel-network:
+    external: true
