@@ -1215,10 +1215,10 @@ export default {
           followSteps: '请按照以下步骤完成 Gemini 账户的授权：',
           step1GenerateUrl: '生成授权链接',
           generateAuthUrl: '生成授权链接',
-          projectIdLabel: 'Project ID（可选）',
+          projectIdLabel: 'Project ID（自动探测失败时必填）',
           projectIdPlaceholder: '例如：my-gcp-project 或 cloud-ai-companion-xxxxx',
           projectIdHint:
-            '留空则在兑换授权码后自动探测；若自动探测失败，可填写后重新生成授权链接再授权。',
+            '系统会先尝试自动探测；如果 Google One 或 Code Assist 返回无 project_id，请填写真实 GCP Project ID，并重新生成授权链接再授权。',
           howToGetProjectId: '如何获取',
           step2OpenUrl: '在浏览器中打开链接并完成授权',
           openUrlDesc: '请在新标签页中打开授权链接，登录您的 Google 账户并授权。',

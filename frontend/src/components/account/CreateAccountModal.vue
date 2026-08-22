@@ -3383,7 +3383,7 @@
         :show-manual-option="true"
         :initial-input-method="'manual'"
         :platform="form.platform"
-        :show-project-id="geminiOAuthType === 'code_assist'"
+        :show-project-id="geminiOAuthType === 'code_assist' || geminiOAuthType === 'google_one'"
         @generate-url="handleGenerateUrl"
         @cookie-auth="handleCookieAuth"
         @validate-refresh-token="handleValidateRefreshToken"

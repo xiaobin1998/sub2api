@@ -1158,10 +1158,10 @@ export default {
 	          followSteps: 'Follow these steps to authorize your Gemini account:',
 	          step1GenerateUrl: 'Generate the authorization URL',
 	          generateAuthUrl: 'Generate Auth URL',
-	          projectIdLabel: 'Project ID (optional)',
+	          projectIdLabel: 'Project ID (required if auto-detection fails)',
 	          projectIdPlaceholder: 'e.g. my-gcp-project or cloud-ai-companion-xxxxx',
 	          projectIdHint:
-	            'Leave empty to auto-detect after code exchange. If auto-detection fails, fill it in and re-generate the auth URL to try again.',
+	            'The system will try auto-detection first. If Google One or Code Assist returns no project_id, enter a real GCP Project ID and regenerate the authorization URL.',
 	          howToGetProjectId: 'How to get',
 	          step2OpenUrl: 'Open the URL in your browser and complete authorization',
 	          openUrlDesc:
