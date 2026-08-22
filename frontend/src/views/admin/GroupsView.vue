@@ -115,7 +115,7 @@
       <template #table>
         <DataTable
           :columns="columns"
-          :data="groups"
+          :data="visibleGroups"
           :loading="loading"
           :server-side-sort="true"
           default-sort-key="sort_order"
@@ -4920,6 +4920,11 @@ const copyAccountsGroupOptionsForEdit = computed(() => {
 });
 
 const groups = ref<AdminGroup[]>([]);
+// Keep empty default groups in the backend, but hide them from the working
+// list until an account is actually bound to the group.
+const visibleGroups = computed(() =>
+  groups.value.filter((group) => (group.account_count ?? 0) > 0),
+);
 const loading = ref(false);
 type GroupUsageSummary = {
   today_cost: number;
