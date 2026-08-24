@@ -1,6 +1,6 @@
 services:
   sub2api:
-    image: xiaobin1998/sub2api:commit-b8fdc2775
+    image: xiaobin1998/sub2api:commit-2d2149c7b
     environment:
       HTTP_PROXY: http://mihomo:7890
       HTTPS_PROXY: http://mihomo:7890
