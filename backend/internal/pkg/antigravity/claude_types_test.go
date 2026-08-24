@@ -13,7 +13,6 @@ func TestDefaultModels_ContainsNewAndLegacyImageModels(t *testing.T) {
 
 	requiredIDs := []string{
 		"claude-fable-5",
-		"claude-opus-4-8",
 		"claude-opus-4-6-thinking",
 		"gemini-2.5-flash-image",
 		"gemini-2.5-flash-image-preview",
@@ -30,6 +29,12 @@ func TestDefaultModels_ContainsNewAndLegacyImageModels(t *testing.T) {
 	for _, id := range requiredIDs {
 		if _, ok := byID[id]; !ok {
 			t.Fatalf("expected model %q to be exposed in DefaultModels", id)
+		}
+	}
+
+	for _, id := range []string{"claude-opus-4-7", "claude-opus-4-8"} {
+		if _, ok := byID[id]; ok {
+			t.Fatalf("model %q must not be exposed in DefaultModels", id)
 		}
 	}
 }
