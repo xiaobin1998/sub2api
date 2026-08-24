@@ -440,3 +440,20 @@ func TestFetchUpstreamSupportedModelsDoesNotExposeUpstreamBody(t *testing.T) {
 	require.NotContains(t, syncErr.SafeMessage(), "SECRET_TOKEN")
 	require.Contains(t, syncErr.SafeMessage(), "HTTP 502")
 }
+
+func TestFilterUnavailableAntigravityModelIDs(t *testing.T) {
+	models := filterUnavailableAntigravityModelIDs([]string{
+		"claude-opus-4-6",
+		"claude-opus-4-7",
+		"claude-opus-4-8",
+		"claude-sonnet-4-6",
+		"claude-sonnet-4-7",
+		"claude-sonnet-4-8",
+		"gemini-3.7-flash-tiered",
+	})
+	require.Equal(t, []string{
+		"claude-opus-4-6",
+		"claude-sonnet-4-6",
+		"gemini-3.7-flash-tiered",
+	}, models)
+}

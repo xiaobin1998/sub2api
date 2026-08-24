@@ -453,7 +453,28 @@ func (s *AccountTestService) fetchAntigravityOAuthUpstreamModels(ctx context.Con
 	for modelID := range modelsResp.Models {
 		models = append(models, strings.TrimSpace(modelID))
 	}
+	models = filterUnavailableAntigravityModelIDs(models)
+	if len(models) == 0 {
+		return nil, newUpstreamModelSyncUpstreamError("Upstream returned no supported models", nil)
+	}
 	return dedupeAndSortModelIDs(models), nil
+}
+
+// filterUnavailableAntigravityModelIDs removes models that the upstream
+// catalog has advertised but real generation requests have confirmed as 404.
+// Keeping them out of the sync result prevents the admin UI from re-adding
+// models that are not actually routable for this Antigravity deployment.
+func filterUnavailableAntigravityModelIDs(models []string) []string {
+	filtered := make([]string, 0, len(models))
+	for _, modelID := range models {
+		switch strings.ToLower(strings.TrimSpace(modelID)) {
+		case "claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-4-7", "claude-sonnet-4-8":
+			continue
+		default:
+			filtered = append(filtered, modelID)
+		}
+	}
+	return filtered
 }
 
 func (s *AccountTestService) doUpstreamModelsRequest(req *http.Request, proxyURL string, account *Account) (*http.Response, error) {
